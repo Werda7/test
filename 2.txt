@@ -1,0 +1,832 @@
+#ifdef NET_TEST
+#define CLIENT_THREAD
+
+#define UDP_PKT_NUM (1*1024)
+#define UDP_PKT_LEN (1024)
+#define TCP_PKT_NUM (1024*1024)
+#define TCP_PKT_LEN (1024)
+#define NET_CARD_LOCA 1 /*表示读取后网的IP作为服务器或客户端*/
+
+int g_NetTest = 0;
+
+// 函数用于将32位网络字节序的IP地址转换为点分十进制字符串  
+void int_to_ip(uint32_t ip, char *buffer, size_t buflen) {  
+    // 确保buffer足够大以容纳IP地址字符串（包括结尾的空字符）  
+    if (buflen < INET_ADDRSTRLEN) {  
+        return; // 缓冲区太小，直接返回  
+    }  
+  
+    // 通过位移和掩码提取每个字节，并将其转换为十进制字符串  
+    sprintf(buffer, "%d.%d.%d.%d",  
+            (ip >> 24) & 0xFF,       // 提取第一个字节  
+            (ip >> 16) & 0xFF,       // 提取第二个字节  
+            (ip >> 8) & 0xFF,        // 提取第三个字节  
+            ip & 0xFF);              // 提取第四个字节  
+} 
+
+unsigned long __stdcall NetTest_erpc(void* param) 
+{	
+	int i = 0;
+	float tcp_speed = 0.0;
+
+	if(g_NetTest == 1)
+	{
+		for(i=0;i<14;i++)
+		{
+			tcp_speed = s_client_master_cpu0->TcpTest_Server_SpeedVerify_hk(TCP_PKT_NUM,TCP_PKT_LEN,NET_CARD_LOCA);
+			//printf("server tcp Speed is %0.2fMb/s\r\n",tcp_speed*8);
+		}
+	}
+	else if(g_NetTest == 2)
+	{
+		s_client_master_cpu0->TcpTest_Server_SpeedVerify_hk(TCP_PKT_NUM,TCP_PKT_LEN,NET_CARD_LOCA);
+	}
+	
+	return 0;
+}
+
+TEST(NetTest,NetTcpSpeed)
+{
+	int ret = 0;
+	char buffer[1024] = {0};
+	int i = 0;
+	int j = 0;
+	float tcp_speed =0 ;
+	float tcp_server_init = 0;
+
+	WSADATA wsaData;  
+    int iResult; 
+
+	SOCKET ClientSocket;  
+    struct sockaddr_in server;  
+
+	int32_t mdiIpAddr = 0;
+	char mdiIpAddrBuf[30] = {0};
+
+	s_client_master_cpu0->GetIpAddr_hk(&mdiIpAddr,NET_CARD_LOCA);
+	int_to_ip(mdiIpAddr,mdiIpAddrBuf,INET_ADDRSTRLEN);
+
+
+	// 初始化Winsock  
+    iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);  
+    if (iResult != 0) {  
+        std::cerr << "WSAStartup failed: " << iResult << std::endl;   
+    }  
+
+    // 创建socket  
+    ClientSocket = socket(AF_INET, SOCK_STREAM, 0);  
+    if (ClientSocket == INVALID_SOCKET) 
+	{  
+        std::cerr << "Could not create socket: " << WSAGetLastError() << std::endl;  
+        WSACleanup();  
+    }
+
+	//server.sin_addr.s_addr = inet_addr(MasterMdiIpAddr); // 服务器IP地址  
+    server.sin_addr.s_addr = inet_addr(mdiIpAddrBuf); // 服务器IP地址  
+	server.sin_family = AF_INET;  
+    server.sin_port = htons(8080); // 服务器端口号
+
+#ifdef CLIENT_THREAD
+	g_NetTest = 2;
+	// 线程句柄  
+    HANDLE hThread;  
+    // 线程ID  
+    DWORD threadId;
+	// 创建线程  
+    hThread = CreateThread(  
+        NULL,               // 使用默认安全属性  
+        0,                  // 使用默认堆栈大小  
+        NetTest_erpc,   	// 线程函数  
+        NULL,               // 传递给线程函数的参数  
+        0,                  // 使用默认创建标志  
+        &threadId);         // 接收线程ID
+
+	// 检查线程是否成功创建  
+    if (hThread == NULL) 
+	{  
+        std::cerr << "CreateThread failed (" << GetLastError() << ")" << std::endl;   
+    } 
+
+#else
+#endif
+	Sleep(3000);
+	// 连接到服务器  
+	iResult = connect(ClientSocket, (struct sockaddr *)&server, sizeof(server)); 
+	if (iResult == SOCKET_ERROR) 
+	{  
+		std::cerr << "connect failed: " << WSAGetLastError() << std::endl;  
+		closesocket(ClientSocket);  
+		WSACleanup();  
+	}
+	// std::cout << "Connected to server successfully" << std::endl;
+	Sleep(1000);
+	for(i=0; i<TCP_PKT_LEN; i++)
+	{
+		buffer[i] = i;
+	}
+	 // 获取开始时间
+	auto start = std::chrono::high_resolution_clock::now(); 
+	for(i=0; i<TCP_PKT_NUM; i++)
+	{
+		send(ClientSocket, buffer, TCP_PKT_LEN, 0);
+		//for(j=0;j<100000;j++);
+	}
+
+	// 获取开始时间
+	auto end = std::chrono::high_resolution_clock::now(); 
+
+	auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end-start);
+
+	//printf("duration.count=%d\n",duration.count());
+
+	tcp_speed = ((float)TCP_PKT_NUM*(float)TCP_PKT_LEN)/((float)duration.count());
+
+	printf("1000Base-T TCP Speed :%0.2fMB/s,Test Data Size:%dMB\n",tcp_speed,TCP_PKT_NUM/1024);
+
+	/*网络速率合格判据*/
+	if(tcp_speed < 50)
+	{
+		ret = -1;
+	}
+
+
+	// 等待线程完成  
+    WaitForSingleObject(hThread, INFINITE);
+    // std::cout << "hThread end ***" << std::endl; 
+    // 关闭线程句柄  
+    CloseHandle(hThread);  
+  
+    // 关闭socket（如果它之前被打开过）  
+    closesocket(ClientSocket);  
+  
+    // 清理Winsock环境  
+    WSACleanup();  
+	EXPECT_EQ(ret, RETURN_OK);
+}
+#endif
+
+
+start cmd /k "echo %TIME% & hk_tcp_server.exe 60902"
+
+#include "netcommontest.h"
+
+static unsigned int g_serverIpAddr = 0;
+
+float TcpTest_Server_SpeedVerify(int pktNum,int pktLen,int netCardLoc)
+{
+	int i = 0;
+	int ret = 0;
+	const int opt = 1;
+	int socketFd,connectFd = 0;
+	int recvLen = 0,recvPacketLen = 0;
+	unsigned int startTime = 0,costTime = 0;
+	int serverIpAddr = 0xc0a81267;
+	int serverIpAddrBuf[30] = {0};
+	float speed = 0.0;
+	char * recvBuf = NULL;
+	
+	recvBuf = (char *)malloc(pktLen);
+	if(recvBuf == NULL)
+	{
+		hklog_err("recvBuf malloc fail\n");
+		return -1;
+	}
+		
+	/*TCP服务器框架搭建*/
+	socketFd = socket(AF_INET,SOCK_STREAM,0);
+	if(socketFd < 0)
+	{
+		hklog_err("socket create fail\n");
+		free(recvBuf);
+		return -1;
+	}
+	
+	setsockopt(socketFd, SOL_SOCKET, SO_REUSEPORT, (const char *)&opt, sizeof(opt));
+	
+	HalConfigInfo_ReadEtherNetAddr(netCardLoc,&serverIpAddr,NULL);
+	
+	sprintf(serverIpAddrBuf, "%d.%d.%d.%d",  \
+			(serverIpAddr >> 24) & 0xFF,     \ 
+			(serverIpAddr >> 16) & 0xFF,     \  
+			(serverIpAddr >> 8) & 0xFF,      \ 
+			serverIpAddr & 0xFF);    
+	
+	hklog_dbg("server IP addr: %s\n",serverIpAddrBuf);
+	
+	struct sockaddr_in serverAddr;
+	memset(&serverAddr,0,sizeof(serverAddr));
+	serverAddr.sin_family = AF_INET;
+	serverAddr.sin_addr.s_addr =  inet_addr(serverIpAddrBuf);
+	serverAddr.sin_port = htons(NET_PORT_TEST_PORT);
+	
+	ret = bind(socketFd,(struct sockaddr *)&serverAddr,sizeof(serverAddr));
+	if(ret < 0)
+	{
+		hklog_err("bind fail\n");
+		free(recvBuf);
+		close(socketFd);
+		return -1;
+	}
+	
+	ret = listen(socketFd,8);
+	if(ret < 0)
+	{
+		hklog_err("listen fail\n");
+		free(recvBuf);
+		close(socketFd);
+		return -1;
+	}
+	
+	connectFd = accept(socketFd,NULL,NULL);
+	if(connectFd < 0)
+	{
+		hklog_err("accept fail\n");
+		free(recvBuf);
+		close(socketFd);
+		return -1;
+	}
+	
+	hklog_dbg("have connect a client\n");
+	
+	while(1)
+	{
+		 memset(recvBuf,0,sizeof(recvBuf));
+		 recvLen = recv(connectFd,recvBuf,pktLen,0);
+		 
+		 if(recvLen < 0)
+		 {
+				hklog_err("recv fail\n");
+				free(recvBuf);
+				close(connectFd);
+				close(socketFd);
+				return -1;
+		 }
+		 else if(recvLen == 0)
+		 {
+				hklog_err("client disconnect\n");
+				free(recvBuf);
+				close(connectFd);
+				close(socketFd);
+				return -1;
+		 }
+		 else
+		 { 
+			 recvPacketLen += recvLen;
+			 
+			 if(recvPacketLen == pktLen)
+			 {
+				 /*收到第一包开始计时*/
+				 startTime = SAL_GetTimeUs();
+			 }
+		 }
+		 
+		 if(recvPacketLen == pktNum*pktLen)
+		 {
+			 costTime = SAL_GetTimeDiffUs(startTime);
+			 break;
+		 }
+	}
+	
+	speed = pktNum*pktLen/(float)costTime;
+	hklog_info("Tcp Speed:%0.2fMB/s\n",speed);
+	free(recvBuf);
+	close(connectFd);
+	close(socketFd);
+	
+	return speed;
+}
+
+float TcpTest_Client_SpeedVerify(int pktNum,int pktLen,int netCardLoc)
+{
+	int i = 0;
+	int ret = 0;
+	const int opt = 1;
+	int socketFd = 0;
+	char * sendBuf = NULL;
+	int sendLen = 0;
+	unsigned int startTime = 0,costTime = 0;
+	unsigned int clientIpAddr = 0;
+	float speed = 0.0;
+	char serverIpAddrBuf[30] = {0};
+	char clientIpAddrBuf[30] = {0};
+	
+	sendBuf = (char *)malloc(pktLen);
+	if(sendBuf == NULL)
+	{
+		hklog_err("sendBuf malloc fail\n");
+		return -1;
+	}
+	
+	memset(sendBuf,0,sizeof(sendBuf));
+	
+	socketFd = socket(AF_INET,SOCK_STREAM,0);
+	if(socketFd < 0)
+	{
+		hklog_err("socket create fail\n");
+		free(sendBuf);
+		return -1;
+	}
+	
+	setsockopt(socketFd, SOL_SOCKET, SO_REUSEPORT, (const char *)&opt, sizeof(opt));
+			
+	HalConfigInfo_ReadEtherNetAddr(netCardLoc,&clientIpAddr,NULL);
+	
+	sprintf(clientIpAddrBuf, "%d.%d.%d.%d",  \
+			(clientIpAddr >> 24) & 0xFF,     \ 
+			(clientIpAddr >> 16) & 0xFF,     \  
+			(clientIpAddr >> 8) & 0xFF,      \ 
+			clientIpAddr & 0xFF);    
+	
+	hklog_dbg("client IP addr: %s\n",clientIpAddrBuf);
+	
+	/*获取服务器IP*/
+	sprintf(serverIpAddrBuf, "%d.%d.%d.%d",  \
+			(g_serverIpAddr >> 24) & 0xFF,     \ 
+			(g_serverIpAddr >> 16) & 0xFF,     \  
+			(g_serverIpAddr >> 8) & 0xFF,      \ 
+			g_serverIpAddr & 0xFF);    
+				
+	struct sockaddr_in serverAddr,clientAddr;
+	memset(&serverAddr,0,sizeof(serverAddr));
+	memset(&clientAddr,0,sizeof(clientAddr));
+	serverAddr.sin_family = AF_INET;
+	serverAddr.sin_addr.s_addr =  inet_addr(serverIpAddrBuf);
+	serverAddr.sin_port = htons(NET_PORT_TEST_PORT);
+	
+	clientAddr.sin_family = AF_INET;
+	clientAddr.sin_addr.s_addr =  inet_addr(clientIpAddrBuf);
+	clientAddr.sin_port = htons(NET_PORT_TEST_PORT);
+	
+	ret = bind(socketFd, (struct sockaddr *)&clientAddr, sizeof(clientAddr));
+	if(ret < 0)
+	{
+		hklog_err("bind fail\n");
+		close(socketFd);
+		free(sendBuf);
+		return -1;
+	}
+	
+	ret = connect(socketFd, (struct sockaddr *)&serverAddr, sizeof(serverAddr));
+	if(ret < 0)
+	{
+		hklog_err("connect server fail\n");
+		close(socketFd);
+		free(sendBuf);
+		return -1;
+	}
+	
+	for(i=0;i<pktLen;i++)
+	{
+		sendBuf[i] = i;
+	}
+	
+	startTime = SAL_GetTimeUs();
+	for(i=0;i<pktNum;i++)
+	{
+		sendLen = send(socketFd,sendBuf,pktLen,0);
+		if(sendLen != pktLen)
+		{
+			hklog_err("send packet %d fail sendLen:%d\n",i,sendBuf[i]);
+			close(socketFd);
+			free(sendBuf);
+			return -1;
+		}
+	}
+	
+	costTime = SAL_GetTimeDiffUs(startTime);
+	speed = pktNum*pktLen/(float)costTime;
+	hklog_info("Tcp Speed:%0.2fMB/s\n",speed);
+	free(sendBuf);
+	close(socketFd);
+
+	return 0;
+}
+
+int UdpTest_Server_LosePkt(int pktNum,int pktLen,int netCardLoc)
+{
+	int i = 0;
+	int ret = 0;
+	int recvLen = 0;
+	int socketFd = 0;
+	int clientAddrSize = 0;
+	int serverIpAddr = 0;
+	int serverIpAddrBuf[30] = {0};
+	const int opt = 1;
+	const int optBufSize = 256*1024;
+	char *recvBuf = NULL;
+
+	recvBuf = (char *)malloc(pktLen);
+	if(recvBuf == NULL)
+	{
+		hklog_err("recvBuf malloc fail\n");
+		return -1;
+	}
+	
+	memset(recvBuf,0,sizeof(recvBuf));
+	
+	/*UDP服务器框架搭建*/
+	socketFd = socket(AF_INET,SOCK_DGRAM,0);
+	if(socketFd < 0)
+	{
+		hklog_err("socket create fail\n");
+		free(recvBuf);
+		return -1;
+	}
+	
+	setsockopt(socketFd, SOL_SOCKET, SO_REUSEPORT, (const char *)&opt, sizeof(opt));
+//	setsockopt(socketFd, SOL_SOCKET, SO_SNDBUF, (const char *)&optBufSize, sizeof(optBufSize));
+//	setsockopt(socketFd, SOL_SOCKET, SO_RCVBUF, (const char *)&optBufSize, sizeof(optBufSize));
+	
+	HalConfigInfo_ReadEtherNetAddr(netCardLoc,&serverIpAddr,NULL);
+	
+	sprintf(serverIpAddrBuf, "%d.%d.%d.%d",  \
+			(serverIpAddr >> 24) & 0xFF,     \ 
+			(serverIpAddr >> 16) & 0xFF,     \  
+			(serverIpAddr >> 8) & 0xFF,      \ 
+			serverIpAddr & 0xFF);    
+	
+	hklog_dbg("server IP addr: %s\n",serverIpAddrBuf);
+	
+	struct sockaddr_in serverAddr,clientAddr;
+	memset(&serverAddr,0,sizeof(serverAddr));
+	memset(&clientAddr,0,sizeof(clientAddr));
+	clientAddrSize = sizeof(clientAddr);
+	serverAddr.sin_family = AF_INET;
+	serverAddr.sin_addr.s_addr =  inet_addr(serverIpAddrBuf);
+	serverAddr.sin_port = htons(NET_PORT_TEST_PORT);
+
+	ret = bind(socketFd,(struct sockaddr *)&serverAddr,sizeof(serverAddr));
+	if(ret < 0)
+	{
+		hklog_err("bind fail\n");
+		free(recvBuf);
+		close(socketFd);
+		return -1;
+	}
+
+	/*PC发送，板卡接收*/
+	while(1)
+	{
+		recvLen = recvfrom(socketFd, recvBuf, pktLen, 0, (SOCKADDR*)&clientAddr, &clientAddrSize);
+		if(recvLen < 0)
+		{
+			hklog_err("recv fail\n");
+			free(recvBuf);
+			close(socketFd);
+			return -1;
+		}
+		else if(recvLen == 0)
+		{
+			hklog_err("client disconnect\n");
+			free(recvBuf);
+			close(socketFd);
+			return -1;
+		}
+		else
+		{
+			if(recvBuf[4] == 0xaa)
+			{
+				break;
+			}
+			
+			//hklog_info("recv a pkt recvLen=%d recvBuf[0]=%d\n",recvLen,recvBuf[0]);
+			sendto(socketFd, recvBuf, pktLen, 0, (SOCKADDR*)&clientAddr, clientAddrSize);
+		}
+	}
+	
+	close(socketFd);
+	free(recvBuf);
+	return 0;
+}
+
+int UdpTest_Client_LosePkt(int pktNum,int pktLen,int netCardLoc)
+{
+	int i = 0;
+	int ret = 0;
+	int sendLen = 0;
+	int socketFd = 0;
+	const int opt = 1;
+	const int optBufSize = 256*1024;
+	char *sendBuf = NULL;
+	char *recvBuf = NULL;
+	char serverIpAddrBuf[30] = {0};
+	unsigned int clientIpAddr = 0;
+	char clientIpAddrBuf[30] = {0};
+	fd_set writeFds;
+	fd_set readFds;
+	struct timeval tv;
+	int udp_loss = 0;
+	int udp_recv_num = 0;
+	float udp_loss_rate = 0.0;
+	int serverAddrSize = 0;
+	int recvLen = 0;
+	
+	sendBuf = (char *)malloc(pktLen);
+	if(sendBuf == NULL)
+	{
+		hklog_err("sendBuf malloc fail\n");
+		return -1;
+	}
+	
+	memset(sendBuf,0,sizeof(sendBuf));
+	
+	recvBuf = (char *)malloc(pktLen);
+	if(recvBuf == NULL)
+	{
+		free(sendBuf);
+		hklog_err("recvBuf malloc fail\n");
+		return -1;
+	}
+	
+	memset(recvBuf,0,sizeof(sendBuf));
+
+	/*UDP服务器框架搭建*/
+	socketFd = socket(AF_INET,SOCK_DGRAM,0);
+	if(socketFd < 0)
+	{
+		hklog_err("socket create fail\n");
+		free(sendBuf);
+		free(recvBuf);
+		return -1;
+	}
+	
+	setsockopt(socketFd, SOL_SOCKET, SO_REUSEPORT, (const char *)&opt, sizeof(opt));
+//	setsockopt(socketFd, SOL_SOCKET, SO_SNDBUF, (const char *)&optBufSize, sizeof(optBufSize));
+//	setsockopt(socketFd, SOL_SOCKET, SO_RCVBUF, (const char *)&optBufSize, sizeof(optBufSize));
+	
+	HalConfigInfo_ReadEtherNetAddr(netCardLoc,&clientIpAddr,NULL);
+	
+	sprintf(clientIpAddrBuf, "%d.%d.%d.%d",  \
+			(clientIpAddr >> 24) & 0xFF,     \ 
+			(clientIpAddr >> 16) & 0xFF,     \  
+			(clientIpAddr >> 8) & 0xFF,      \ 
+			clientIpAddr & 0xFF);    
+	
+	hklog_dbg("client IP addr: %s\n",clientIpAddrBuf);
+	
+	/*获取服务器IP*/
+	sprintf(serverIpAddrBuf, "%d.%d.%d.%d",  \
+			(g_serverIpAddr >> 24) & 0xFF,     \ 
+			(g_serverIpAddr >> 16) & 0xFF,     \  
+			(g_serverIpAddr >> 8) & 0xFF,      \ 
+			g_serverIpAddr & 0xFF);    
+	
+	hklog_dbg("server ipaddr :%s\n",serverIpAddrBuf);
+	
+	struct sockaddr_in serverAddr,clientAddr;
+	memset(&serverAddr,0,sizeof(serverAddr));
+	memset(&clientAddr,0,sizeof(clientAddr));
+	
+	serverAddr.sin_family = AF_INET;
+	serverAddr.sin_addr.s_addr =  inet_addr(serverIpAddrBuf);
+	serverAddr.sin_port = htons(NET_PORT_TEST_PORT);
+	
+	clientAddr.sin_family = AF_INET;
+	clientAddr.sin_addr.s_addr =  inet_addr(clientIpAddrBuf);
+	clientAddr.sin_port = htons(NET_PORT_TEST_PORT);
+	
+	ret = bind(socketFd, (struct sockaddr *)&clientAddr, sizeof(clientAddr));
+	if(ret < 0)
+	{
+		hklog_err("bind fail\n");
+		close(socketFd);
+		free(sendBuf);
+		free(recvBuf);
+		return -1;
+	}
+	
+
+	
+	for(i=0; i<pktNum; i++)
+	{
+		/*发送数据第0位0到255循环*/
+		sendBuf[0] = i;
+		memset(recvBuf, 0, sizeof(recvBuf)); 
+		
+		/*使用FD_ZERO 清空fd_set*/
+		FD_ZERO(&writeFds);
+	
+		/*把套接字加入读写fd_set集合，FD_SET*/
+		FD_SET(socketFd,&writeFds);
+		
+		/*设置超时时间*/
+		tv.tv_sec = 5;
+		tv.tv_usec = 0;
+		
+		/*select检查套接字是否可写*/
+		ret = select(socketFd+1,NULL,&writeFds,NULL,&tv);
+		if(ret < 0)
+		{
+			hklog_info("socket send %d pakcet select error\n",i);
+			close(socketFd);
+			free(sendBuf);
+			free(recvBuf);
+			return -1;
+		}
+		else if(ret == 0)
+		{
+			hklog_info("socket send %d pakcet time out \n",i);
+		}
+		else
+		{
+			if(FD_ISSET(socketFd,&writeFds))
+			{
+				sendto(socketFd, sendBuf, pktLen, 0, (SOCKADDR*)&serverAddr, sizeof(serverAddr));
+				
+				FD_ZERO(&readFds);
+				
+				FD_SET(socketFd,&readFds);
+				
+				/*设置超时时间*/
+				tv.tv_sec = 5;
+				tv.tv_usec = 0;
+				
+				ret = select(socketFd+1,&readFds,NULL,NULL,&tv);					
+				if(ret < 0)
+				{
+					hklog_info("socket recv  %d pakcet select error\n",i);
+					close(socketFd);
+					free(sendBuf);
+					free(recvBuf);
+					return -1;				
+				}
+				else if(ret == 0)
+				{
+					hklog_info("socket recv %d pakcet time out \n",i);
+				}
+				else
+				{
+					if(FD_ISSET(socketFd,&readFds))
+					{
+						recvLen = recvfrom(socketFd, recvBuf, pktLen, 0, NULL, NULL);
+						if(recvBuf[0] == sendBuf[0])
+						{
+							udp_recv_num++;
+							//hklog_info("correct pktNum %d\n",i);
+						}
+						else
+						{
+							hklog_info("error pktNum %d:recvBuf[0]=%d sendBuf[0]=%d\n",i,recvBuf[0],sendBuf[0]);
+						}
+						
+					}
+				}
+			}
+		}
+	}
+	
+	sendBuf[4] = 0xaa;
+	
+	/*使用FD_ZERO 清空fd_set*/
+	FD_ZERO(&writeFds);
+
+	/*把套接字加入读写fd_set集合，FD_SET*/
+	FD_SET(socketFd,&writeFds);
+	
+	/*设置超时时间*/
+	tv.tv_sec = 5;
+	tv.tv_usec = 0;
+	
+	/*select检查套接字是否可写*/
+	ret = select(socketFd+1,NULL,&writeFds,NULL,&tv);
+	
+	if(ret > 0)
+	{
+		if(FD_ISSET(socketFd,&writeFds))
+		{
+			sendto(socketFd, sendBuf, pktLen, 0, (SOCKADDR*)&serverAddr, sizeof(serverAddr));
+		}
+	}
+	
+
+	udp_loss = pktNum - udp_recv_num;
+	udp_loss_rate = udp_loss/pktNum;
+	hklog_info("udp_recv_num=%d,udp_loss=%d,pktNum=%d,udp_loss_rate = %0.2f%%\n",udp_recv_num,udp_loss,pktNum,udp_loss_rate*100);
+	close(socketFd);
+	free(sendBuf);
+	free(recvBuf);
+	return 0;
+}
+
+/*获取板卡IP地址*/
+int GetIpAddr(int * ipAddr,int netCardLoc)
+{
+	char ipAddrBuf[30] = {0};
+	
+	int mask = 0;
+	
+	HalConfigInfo_ReadEtherNetAddr(netCardLoc,ipAddr,&mask);
+	
+    sprintf(ipAddrBuf, "%d.%d.%d.%d",  \
+            (*ipAddr >> 24) & 0xFF,     \ 
+            (*ipAddr >> 16) & 0xFF,     \  
+            (*ipAddr >> 8) & 0xFF,      \ 
+            *ipAddr & 0xFF);    
+    
+	hklog_dbg("IP addr: %s\n",ipAddrBuf);
+	
+	return 0;
+}
+
+int SetServerIpAddr(unsigned int ipAddr)
+{
+	int ret = 0;
+	g_serverIpAddr = ipAddr;
+	return 0;
+}
+
+
+#ifndef _NET_COMMON_TEST_H_20250401
+#define	_NET_COMMON_TEST_H_20250401
+
+#ifdef __cplusplus
+ extern "C" {
+#endif 
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <ReDs/HAL/halConfigInfo.h>
+#include <ReDs/SAl/salTime.h>
+#include "HKLOG/hklog.h"
+ 
+#define NET_PORT_TEST_PORT 8080
+
+/*TCP速率测试*/
+float TcpTest_Server_SpeedVerify(int pktNum,int pktLen,int netCardLoc);
+float TcpTest_Client_SpeedVerify(int pktNum,int pktLen,int netCardLoc);
+
+/*UDP丢包测试*/
+int UdpTest_Server_LosePkt(int pktNum,int pktLen,int netCardLoc);
+int UdpTest_Client_LosePkt(int pktNum,int pktLen,int netCardLoc);
+
+/*获取板卡IP地址*/
+int GetIpAddr(int *ipAddr,int netCardLoc);
+
+/*设置对端服务器IP地址*/
+int SetServerIpAddr(unsigned int ipAddr);
+
+#ifdef __cplusplus
+}
+#endif
+#endif
+
+#include "netcommontest.h"
+
+#define UDP_PKT_NUM (1*1024)
+#define UDP_PKT_LEN (1024)
+#define TCP_PKT_NUM (1*1024)
+#define TCP_PKT_LEN (1024)
+#define NET_CARD_LOCA 1 /*��ʾ��ȡ������IP��Ϊ��������ͻ���*/
+#define SEVER_IP_ADDR 0xc0a805a8
+
+int UdpLosePktTest(int flag)
+{	
+	int ret = 0;
+	
+	if(flag)
+	{
+		SetServerIpAddr(SEVER_IP_ADDR);
+		ret = UdpTest_Client_LosePkt(UDP_PKT_NUM,UDP_PKT_LEN,NET_CARD_LOCA);
+	}
+	else
+	{
+		ret = UdpTest_Server_LosePkt(UDP_PKT_NUM,UDP_PKT_LEN,NET_CARD_LOCA);
+	}
+	
+	return ret;
+}
+
+int TcpSpeedTest(int flag)
+{	
+	int ret = 0;
+	
+	if(flag)
+	{
+		SetServerIpAddr(SEVER_IP_ADDR);
+		ret = TcpTest_Client_SpeedVerify(TCP_PKT_NUM,TCP_PKT_LEN,NET_CARD_LOCA);
+	}
+	else
+	{
+		ret = TcpTest_Server_SpeedVerify(TCP_PKT_NUM,TCP_PKT_LEN,NET_CARD_LOCA);
+	}
+	
+	return ret;
+}
+
+void all_port_test()
+{
+	int i = 0;
+	for(i=0;i<16;i++)
+	{
+		hklog_info("Test Time : %d\n",i);
+		TcpSpeedTest(0);
+		UdpLosePktTest(0);
+		hklog_info("\n");
+	}
+}
+
+
